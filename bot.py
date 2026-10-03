@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 # ========== CONFIG ==========
-TOKEN = os.getenv("TELEGRAM_TOKEN") or "your_token_here"
+TOKEN = os.getenv("TELEGRAM_TOKEN") or "8883436602:AAEUuxDl9qEprq5dBGHdaf4_R6nhC7G_kDg"
 ADMIN_ID = int(os.getenv("ADMIN_ID") or "5510702228")
 DEV_NAME = "@VICKYGAMING0"
 BOT_NAME = "VTX PATCHER"
