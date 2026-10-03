@@ -1,4 +1,4 @@
-name: VTX SO Patcher Bot
+name: VTX Patcher Bot
 
 on:
   push:
@@ -28,17 +28,53 @@ jobs:
           python-version: '3.11'
 
       # ============================================
-      # 3. INSTALL PYTHON DEPENDENCIES
+      # 3. SETUP JAVA
+      # ============================================
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ============================================
+      # 4. INSTALL SYSTEM TOOLS
+      # ============================================
+      - name: Install System Tools
+        timeout-minutes: 15
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            zipalign \
+            apksigner \
+            unzip \
+            wget
+          echo "✅ Tools installed"
+          which apksigner || echo "❌ apksigner missing"
+          which zipalign || echo "❌ zipalign missing"
+
+      # ============================================
+      # 5. DOWNLOAD UBER APK SIGNER
+      # ============================================
+      - name: Download Uber APK Signer
+        run: |
+          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar \
+            -O /tmp/uber-apk-signer.jar
+          ls -lh /tmp/uber-apk-signer.jar
+          echo "✅ uber-apk-signer downloaded"
+
+      # ============================================
+      # 6. INSTALL PYTHON DEPENDENCIES
       # ============================================
       - name: Install Python Dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          echo "✅ Python deps installed"
           pip list | grep telegram
 
       # ============================================
-      # 4. RUN BOT
+      # 7. RUN BOT
       # ============================================
       - name: Run Bot
         env:
@@ -46,18 +82,6 @@ jobs:
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: |
           echo "========================================"
-          echo "Starting VTX SO PATCHER Bot..."
+          echo "Starting VTX PATCHER Bot..."
           echo "========================================"
           python bot.py
-
-      # ============================================
-      # 5. SAVE DATABASE (optional)
-      # ============================================
-      - name: Save Database
-        if: always()
-        uses: actions/cache@v4
-        with:
-          path: vtx.db
-          key: vtx-db-${{ github.run_id }}
-          restore-keys: |
-            vtx-db-
