@@ -219,23 +219,28 @@ async def patch_so_only(update, context, msg, so_path):
 async def crack_apk(update, context, msg, apk_path):
     user_id = update.effective_user.id
     ts = int(time.time())
-    out_dir = os.path.join(TEMP_DIR, f"crack_{user_id}_{ts}")
+    dec_dir = os.path.join(TEMP_DIR, f"dec_{user_id}_{ts}")
     out_apk = os.path.join(TEMP_DIR, f"VTX_{user_id}_{ts}.apk")
 
     apk_path = os.path.abspath(apk_path)
-    out_dir = os.path.abspath(out_dir)
+    dec_dir = os.path.abspath(dec_dir)
     out_apk = os.path.abspath(out_apk)
 
     try:
-        await msg.edit_text("🔍 Step 1/6: Extracting APK...")
-        os.makedirs(out_dir, exist_ok=True)
-        with zipfile.ZipFile(apk_path, 'r') as z:
-            z.extractall(out_dir)
+        # STEP 1: Decompile with apktool
+        await msg.edit_text("🔍 Step 1/5: Decoding APK (apktool)...")
+        r = subprocess.run(
+            f'apktool d -f -o "{dec_dir}" "{apk_path}"',
+            shell=True, capture_output=True, text=True, timeout=600
+        )
+        if r.returncode != 0:
+            await msg.edit_text(f"❌ apktool fail: {r.stderr[:200]}")
+            return
 
-        await msg.edit_text(f"🔍 Step 2/6: Looking for '{TARGET_SO}'...")
-
+        # STEP 2: .so file dhundo
+        await msg.edit_text(f"🔍 Step 2/5: Looking for '{TARGET_SO}'...")
         found_path = None
-        for root, _, files in os.walk(out_dir):
+        for root, _, files in os.walk(dec_dir):
             for f in files:
                 if f == TARGET_SO:
                     found_path = os.path.join(root, f)
@@ -244,45 +249,91 @@ async def crack_apk(update, context, msg, apk_path):
                 break
 
         if not found_path:
-            await msg.edit_text(
-                f"❌ '{TARGET_SO}' nahi mili.\n\n"
-                f"Available .so files:\n"
-                + "\n".join(
-                    f"   • {f}" for root, _, files in os.walk(out_dir)
-                    for f in files if f.endswith(".so")
-                )[:600]
-            )
+            await msg.edit_text(f"❌ '{TARGET_SO}' nahi mili.")
             return
 
-        await msg.edit_text(f"🔧 Step 3/6: Patching '{TARGET_SO}'...")
+        # STEP 3: Patch
+        await msg.edit_text(f"🔧 Step 3/5: Patching '{TARGET_SO}'...")
         count = patch_so_file(found_path)
-
         if count == 0:
-            await msg.edit_text(f"⚠️ '{TARGET_SO}' mein exact 'show' nahi mila.")
+            await msg.edit_text("⚠️ Exact 'show' nahi mila.")
             return
 
-        await msg.edit_text("🔧 Step 4/6: Rebuilding APK...")
-        with zipfile.ZipFile(out_apk, 'w', zipfile.ZIP_DEFLATED) as zf:
-            manifest = os.path.join(out_dir, "AndroidManifest.xml")
-            if os.path.exists(manifest):
-                zf.write(manifest, "AndroidManifest.xml")
+        # STEP 4: Rebuild with apktool
+        await msg.edit_text("🔧 Step 4/5: Building APK (apktool b)...")
+        r = subprocess.run(
+            f'apktool b -f -o "{out_apk}" "{dec_dir}"',
+            shell=True, capture_output=True, text=True, timeout=900
+        )
+        if r.returncode != 0:
+            await msg.edit_text(f"❌ apktool b fail: {r.stderr[:200]}")
+            return
 
-            for root, _, files in os.walk(out_dir):
-                for f in files:
-                    full = os.path.join(root, f)
-                    rel = os.path.relpath(full, out_dir).replace("\\", "/")
-                    if rel == "AndroidManifest.xml":
-                        continue
-                    zf.write(full, rel)
+        # STEP 5: Zipalign + Sign
+        await msg.edit_text("🔧 Step 5/5: Aligning + Signing...")
 
-        await msg.edit_text("🔧 Step 5/6: Zipalign...")
-        align = zipalign_apk(out_apk)
+        # Zipalign
+        z = shutil.which("zipalign")
+        if z:
+            aligned = out_apk.replace(".apk", "_z.apk")
+            subprocess.run(
+                f'{z} -p -f 4 "{out_apk}" "{aligned}"',
+                shell=True, capture_output=True
+            )
+            if os.path.exists(aligned):
+                os.replace(aligned, out_apk)
 
-        await msg.edit_text("🔧 Step 6/6: Signing...")
-        sign = sign_apk(out_apk)
+        # Sign — uber first
+        uber = "/tmp/uber.jar"
+        if not os.path.exists(uber):
+            uber = "/tmp/uber-apk-signer.jar"
+
+        sign_status = "❌ not signed"
+        if os.path.exists(uber):
+            r = subprocess.run(
+                f'java -jar "{uber}" --apks "{out_apk}" --allowResign --overwrite',
+                shell=True, capture_output=True, text=True, timeout=600
+            )
+            logger.info(f"Uber stdout: {r.stdout[-500:]}")
+            logger.info(f"Uber stderr: {r.stderr[-500:]}")
+
+            # Output dhundo
+            folder = os.path.dirname(out_apk)
+            base = os.path.basename(out_apk)[:-4]
+            for f in os.listdir(folder):
+                if f.startswith(base) and ("signed" in f.lower() or "aligned" in f.lower()):
+                    new_path = os.path.join(folder, f)
+                    if new_path != out_apk:
+                        os.replace(new_path, out_apk)
+                        sign_status = "✅ Signed (uber)"
+                        break
+            else:
+                sign_status = "✅ Signed (inplace)"
+
+        # Fallback apksigner
+        if "not signed" in sign_status:
+            apksigner = shutil.which("apksigner")
+            if apksigner:
+                ks = "/tmp/vtx.keystore"
+                if not os.path.exists(ks):
+                    subprocess.run(
+                        f'keytool -genkeypair -v -keystore {ks} -alias vtx '
+                        f'-keyalg RSA -keysize 2048 -validity 10000 '
+                        f'-storepass vtxpass -keypass vtxpass '
+                        f'-dname "CN=VTX, O=VTX, C=IN"',
+                        shell=True, capture_output=True
+                    )
+                r = subprocess.run(
+                    f'{apksigner} sign --ks {ks} --ks-key-alias vtx '
+                    f'--ks-pass pass:vtxpass --key-pass pass:vtxpass '
+                    f'--v1-signing-enabled true --v2-signing-enabled true '
+                    f'--v3-signing-enabled true "{out_apk}"',
+                    shell=True, capture_output=True, text=True, timeout=300
+                )
+                if r.returncode == 0:
+                    sign_status = "✅ Signed (apksigner)"
 
         size_mb = os.path.getsize(out_apk) / (1024 * 1024)
-
         await update.message.reply_document(
             document=open(out_apk, 'rb'),
             filename=f"VTX_{os.path.basename(apk_path)}",
@@ -291,8 +342,7 @@ async def crack_apk(update, context, msg, apk_path):
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"🎯 Target: {TARGET_SO}\n"
                 f"🔧 Replaced: {count} 'show'\n"
-                f"📦 {align}\n"
-                f"📦 {sign}\n"
+                f"📦 {sign_status}\n"
                 f"📊 Size: {size_mb:.2f} MB\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"⚡ {BOT_NAME} | {DEV_NAME}"
@@ -303,7 +353,7 @@ async def crack_apk(update, context, msg, apk_path):
         logger.exception("crack_apk")
         await msg.edit_text(f"❌ Error: {str(e)}")
     finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        shutil.rmtree(dec_dir, ignore_errors=True)
         try: os.remove(apk_path)
         except: pass
         try: os.remove(out_apk)
