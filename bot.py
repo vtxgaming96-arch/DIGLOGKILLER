@@ -17,7 +17,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID") or "5510702228")
 DEV_NAME = "@VICKYGAMING0"
 BOT_NAME = "VTX PATCHER"
 
-# ★ APNI .so KA NAAM YAHAN DAAL
+# ★ APNI .so KA NAAM YAHAN
 TARGET_SO = "libEliteMods.so"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 WAITING_FILE = 1
 
 
-# ========== FIND TOOL ==========
+# ========== TOOLS ==========
 def find_tool(name):
     p = shutil.which(name)
     if p:
@@ -41,92 +41,10 @@ def find_tool(name):
     for c in [
         f"/usr/bin/{name}",
         f"/usr/local/bin/{name}",
-        "/usr/lib/android-sdk/build-tools/debian/" + name,
-        "/opt/android-sdk/build-tools/debian/" + name,
     ]:
         if os.path.exists(c):
             return c
-    # Build tools folder
-    for base in ["/usr/lib/android-sdk/build-tools",
-                 "/opt/android-sdk/build-tools"]:
-        if os.path.isdir(base):
-            for d in os.listdir(base):
-                p = os.path.join(base, d, name)
-                if os.path.exists(p):
-                    return p
     return None
-
-
-# ========== SIGN APK ==========
-def sign_apk(apk_path):
-    """Uber APK Signer se sign karo"""
-    uber = "/tmp/uber-apk-signer.jar"
-
-    if os.path.exists(uber):
-        r = subprocess.run(
-            f'java -jar "{uber}" --apks "{apk_path}" --allowResign',
-            shell=True, capture_output=True, text=True, timeout=300
-        )
-
-        # Output file
-        base = apk_path[:-4]
-        signed_candidates = [
-            f"{base}-aligned-signed.apk",
-            f"{base}-signed.apk",
-        ]
-        for s in signed_candidates:
-            if os.path.exists(s):
-                os.replace(s, apk_path)
-                return "✅ Signed (uber V1+V2+V3)"
-
-        # Cleanup extra files
-        for f in os.listdir(os.path.dirname(apk_path)):
-            if f.endswith("-aligned.apk") or f.endswith("-signed.apk"):
-                try:
-                    os.remove(os.path.join(os.path.dirname(apk_path), f))
-                except: pass
-
-        return f"⚠️ uber output missing"
-
-    # Fallback: apksigner
-    apksigner = find_tool("apksigner")
-    if apksigner:
-        ks = "/tmp/vtx.keystore"
-        if not os.path.exists(ks):
-            subprocess.run(
-                f'keytool -genkeypair -v -keystore {ks} -alias vtx '
-                f'-keyalg RSA -keysize 2048 -validity 10000 '
-                f'-storepass vtxpass -keypass vtxpass '
-                f'-dname "CN=VTX, O=VTX, C=IN"',
-                shell=True, capture_output=True
-            )
-
-        r = subprocess.run(
-            f'{apksigner} sign --ks {ks} --ks-key-alias vtx '
-            f'--ks-pass pass:vtxpass --key-pass pass:vtxpass '
-            f'--v1-signing-enabled true --v2-signing-enabled true '
-            f'--v3-signing-enabled true "{apk_path}"',
-            shell=True, capture_output=True, text=True, timeout=300
-        )
-        return "✅ Signed (apksigner)" if r.returncode == 0 else f"❌ {r.stderr[:150]}"
-
-    return "❌ No signer available"
-
-
-# ========== ZIPALIGN ==========
-def zipalign_apk(apk_path):
-    z = find_tool("zipalign")
-    if not z:
-        return "⚠️ zipalign not found"
-    out = apk_path.replace(".apk", "_aligned.apk")
-    r = subprocess.run(
-        f'{z} -p -f 4 "{apk_path}" "{out}"',
-        shell=True, capture_output=True, text=True, timeout=300
-    )
-    if r.returncode == 0 and os.path.exists(out):
-        os.replace(out, apk_path)
-        return "✅ Aligned"
-    return f"⚠️ align failed"
 
 
 # ========== PATCH .SO CORE ==========
@@ -170,8 +88,37 @@ def patch_so_file(so_path):
 
         return replaced
     except Exception as e:
-        logger.error(f"patch error: {e}")
+        logger.error(f"patch_so error: {e}")
         return 0
+
+
+# ========== SIGN APK ==========
+def sign_apk(apk_path):
+    """Uber APK Signer (zipalign + sign)"""
+    uber = os.getenv("UBER_PATH") or "/tmp/tools/uber-apk-signer.jar"
+    if not os.path.exists(uber):
+        return "❌ uber-apk-signer not found"
+
+    r = subprocess.run(
+        f'java -jar "{uber}" --apks "{apk_path}" --allowResign --overwrite',
+        shell=True, capture_output=True, text=True, timeout=600
+    )
+
+    logger.info(f"Uber stdout: {r.stdout[-300:]}")
+    logger.info(f"Uber stderr: {r.stderr[-300:]}")
+
+    # Cleanup extra files
+    folder = os.path.dirname(apk_path)
+    base = os.path.basename(apk_path)[:-4]
+    for f in os.listdir(folder):
+        if f.startswith(base) and f != os.path.basename(apk_path):
+            try:
+                os.remove(os.path.join(folder, f))
+            except: pass
+
+    if r.returncode == 0:
+        return "✅ Signed V1+V2+V3"
+    return f"❌ {r.stderr[:150]}"
 
 
 # ========== MODE 1: PATCH .SO ONLY ==========
@@ -215,123 +162,78 @@ async def patch_so_only(update, context, msg, so_path):
         except: pass
 
 
-# ========== MODE 2: CRACK APK ==========
+# ========== MODE 2: CRACK APK (REPLACE, NOT REBUILD) ==========
 async def crack_apk(update, context, msg, apk_path):
     user_id = update.effective_user.id
     ts = int(time.time())
-    dec_dir = os.path.join(TEMP_DIR, f"dec_{user_id}_{ts}")
+    temp_so = os.path.join(TEMP_DIR, f"target_{user_id}_{ts}.so")
+    temp_so_patched = temp_so + ".patched"
     out_apk = os.path.join(TEMP_DIR, f"VTX_{user_id}_{ts}.apk")
 
     apk_path = os.path.abspath(apk_path)
-    dec_dir = os.path.abspath(dec_dir)
     out_apk = os.path.abspath(out_apk)
 
     try:
-        # STEP 1: Decompile with apktool
-        await msg.edit_text("🔍 Step 1/5: Decoding APK (apktool)...")
-        r = subprocess.run(
-            f'apktool d -f -o "{dec_dir}" "{apk_path}"',
-            shell=True, capture_output=True, text=True, timeout=600
-        )
-        if r.returncode != 0:
-            await msg.edit_text(f"❌ apktool fail: {r.stderr[:200]}")
-            return
+        # ===== STEP 1: ZIP view — .so dhundo =====
+        await msg.edit_text(f"🔍 Step 1/5: Viewing APK for '{TARGET_SO}'...")
 
-        # STEP 2: .so file dhundo
-        await msg.edit_text(f"🔍 Step 2/5: Looking for '{TARGET_SO}'...")
-        found_path = None
-        for root, _, files in os.walk(dec_dir):
-            for f in files:
-                if f == TARGET_SO:
-                    found_path = os.path.join(root, f)
+        with zipfile.ZipFile(apk_path, 'r') as zin:
+            # .so file dhundo
+            so_entry = None
+            for name in zin.namelist():
+                if name.endswith("/" + TARGET_SO) or name == TARGET_SO:
+                    so_entry = name
                     break
-            if found_path:
-                break
 
-        if not found_path:
-            await msg.edit_text(f"❌ '{TARGET_SO}' nahi mili.")
-            return
-
-        # STEP 3: Patch
-        await msg.edit_text(f"🔧 Step 3/5: Patching '{TARGET_SO}'...")
-        count = patch_so_file(found_path)
-        if count == 0:
-            await msg.edit_text("⚠️ Exact 'show' nahi mila.")
-            return
-
-        # STEP 4: Rebuild with apktool
-        await msg.edit_text("🔧 Step 4/5: Building APK (apktool b)...")
-        r = subprocess.run(
-            f'apktool b -f -o "{out_apk}" "{dec_dir}"',
-            shell=True, capture_output=True, text=True, timeout=900
-        )
-        if r.returncode != 0:
-            await msg.edit_text(f"❌ apktool b fail: {r.stderr[:200]}")
-            return
-
-        # STEP 5: Zipalign + Sign
-        await msg.edit_text("🔧 Step 5/5: Aligning + Signing...")
-
-        # Zipalign
-        z = shutil.which("zipalign")
-        if z:
-            aligned = out_apk.replace(".apk", "_z.apk")
-            subprocess.run(
-                f'{z} -p -f 4 "{out_apk}" "{aligned}"',
-                shell=True, capture_output=True
-            )
-            if os.path.exists(aligned):
-                os.replace(aligned, out_apk)
-
-        # Sign — uber first
-        uber = "/tmp/uber.jar"
-        if not os.path.exists(uber):
-            uber = "/tmp/uber-apk-signer.jar"
-
-        sign_status = "❌ not signed"
-        if os.path.exists(uber):
-            r = subprocess.run(
-                f'java -jar "{uber}" --apks "{out_apk}" --allowResign --overwrite',
-                shell=True, capture_output=True, text=True, timeout=600
-            )
-            logger.info(f"Uber stdout: {r.stdout[-500:]}")
-            logger.info(f"Uber stderr: {r.stderr[-500:]}")
-
-            # Output dhundo
-            folder = os.path.dirname(out_apk)
-            base = os.path.basename(out_apk)[:-4]
-            for f in os.listdir(folder):
-                if f.startswith(base) and ("signed" in f.lower() or "aligned" in f.lower()):
-                    new_path = os.path.join(folder, f)
-                    if new_path != out_apk:
-                        os.replace(new_path, out_apk)
-                        sign_status = "✅ Signed (uber)"
-                        break
-            else:
-                sign_status = "✅ Signed (inplace)"
-
-        # Fallback apksigner
-        if "not signed" in sign_status:
-            apksigner = shutil.which("apksigner")
-            if apksigner:
-                ks = "/tmp/vtx.keystore"
-                if not os.path.exists(ks):
-                    subprocess.run(
-                        f'keytool -genkeypair -v -keystore {ks} -alias vtx '
-                        f'-keyalg RSA -keysize 2048 -validity 10000 '
-                        f'-storepass vtxpass -keypass vtxpass '
-                        f'-dname "CN=VTX, O=VTX, C=IN"',
-                        shell=True, capture_output=True
-                    )
-                r = subprocess.run(
-                    f'{apksigner} sign --ks {ks} --ks-key-alias vtx '
-                    f'--ks-pass pass:vtxpass --key-pass pass:vtxpass '
-                    f'--v1-signing-enabled true --v2-signing-enabled true '
-                    f'--v3-signing-enabled true "{out_apk}"',
-                    shell=True, capture_output=True, text=True, timeout=300
+            if not so_entry:
+                await msg.edit_text(
+                    f"❌ '{TARGET_SO}' APK mein nahi mili.\n\n"
+                    f"APK mein ye .so files hain:\n"
+                    + "\n".join(
+                        f"   • {n}" for n in zin.namelist()
+                        if n.endswith(".so")
+                    )[:600]
                 )
-                if r.returncode == 0:
-                    sign_status = "✅ Signed (apksigner)"
+                return
+
+            # .so file extract
+            await msg.edit_text(f"🔧 Step 2/5: Extracting '{TARGET_SO}'...")
+            with zin.open(so_entry) as src, open(temp_so, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+
+        # ===== STEP 2: Patch .so =====
+        await msg.edit_text(f"🔧 Step 3/5: Patching .so...")
+        shutil.copy2(temp_so, temp_so_patched)
+        count = patch_so_file(temp_so_patched)
+
+        if count == 0:
+            await msg.edit_text("⚠️ Exact 'show' nahi mila .so mein.")
+            return
+
+        # ===== STEP 3: APK copy + .so REPLACE =====
+        await msg.edit_text("🔧 Step 4/5: Replacing .so in APK...")
+        shutil.copy2(apk_path, out_apk)
+
+        # APK ko update karo — sirf ek entry replace karo
+        # zipfile se update nahi hota, isliye temp APK banao
+        temp_apk = out_apk + ".tmp"
+
+        with zipfile.ZipFile(apk_path, 'r') as zin:
+            with zipfile.ZipFile(temp_apk, 'w', zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    if item.filename == so_entry:
+                        # Patched .so daalo
+                        zout.write(temp_so_patched, item.filename)
+                    else:
+                        # Baaki sab copy — bilkul same
+                        data = zin.read(item.filename)
+                        zout.writestr(item, data)
+
+        os.replace(temp_apk, out_apk)
+
+        # ===== STEP 4: Sign =====
+        await msg.edit_text("🔧 Step 5/5: Signing...")
+        sign = sign_apk(out_apk)
 
         size_mb = os.path.getsize(out_apk) / (1024 * 1024)
         await update.message.reply_document(
@@ -342,7 +244,7 @@ async def crack_apk(update, context, msg, apk_path):
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"🎯 Target: {TARGET_SO}\n"
                 f"🔧 Replaced: {count} 'show'\n"
-                f"📦 {sign_status}\n"
+                f"📦 {sign}\n"
                 f"📊 Size: {size_mb:.2f} MB\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"⚡ {BOT_NAME} | {DEV_NAME}"
@@ -353,11 +255,9 @@ async def crack_apk(update, context, msg, apk_path):
         logger.exception("crack_apk")
         await msg.edit_text(f"❌ Error: {str(e)}")
     finally:
-        shutil.rmtree(dec_dir, ignore_errors=True)
-        try: os.remove(apk_path)
-        except: pass
-        try: os.remove(out_apk)
-        except: pass
+        for p in [apk_path, out_apk, temp_so, temp_so_patched]:
+            try: os.remove(p)
+            except: pass
 
 
 # ========== COMMANDS ==========
