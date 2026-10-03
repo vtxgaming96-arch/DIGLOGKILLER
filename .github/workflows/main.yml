@@ -1,0 +1,63 @@
+name: VTX SO Patcher Bot
+
+on:
+  push:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      # ============================================
+      # 1. CHECKOUT
+      # ============================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ============================================
+      # 2. SETUP PYTHON
+      # ============================================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ============================================
+      # 3. INSTALL PYTHON DEPENDENCIES
+      # ============================================
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Python deps installed"
+          pip list | grep telegram
+
+      # ============================================
+      # 4. RUN BOT
+      # ============================================
+      - name: Run Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+        run: |
+          echo "========================================"
+          echo "Starting VTX SO PATCHER Bot..."
+          echo "========================================"
+          python bot.py
+
+      # ============================================
+      # 5. SAVE DATABASE (optional)
+      # ============================================
+      - name: Save Database
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: vtx.db
+          key: vtx-db-${{ github.run_id }}
+          restore-keys: |
+            vtx-db-
