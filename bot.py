@@ -103,10 +103,10 @@ async def patch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Koi bhi `.so` file upload kar.\n\n"
         "Bot:\n"
         "  1. File scan karega\n"
-        "  2. Sirf exact 'show' string dhundhega\n"
-        "  3. 'hide' se replace karega\n"
+        "  2. Sirf exact string dhundhega\n"
+        "  3. replace karega\n"
         "  4. Patched file return karega\n\n"
-        "⚠️ 'showDialog', 'showToast' jaise strings\n"
+        "⚠️ 'Dialog', 'showToast' jaise strings\n"
         "   touch nahi honge."
     )
     context.user_data['action'] = 'patch'
@@ -161,7 +161,7 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ SO PATCHED\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"📦 File: {fname}\n"
-                f"🔧 Replaced: {count} exact 'show'\n"
+                f"🔧 Replaced: {count} exact 'F@CK'\n"
                 f"📊 Size: {size_kb:.2f} KB\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"⚡ {BOT_NAME} | {DEV_NAME}"
